@@ -29,10 +29,17 @@ usage() {
   echo "  -t, --temp         Set temperature 0.0-2.0 (default: 0.7)"
   echo "  -f, --file         Read prompt from file"
   echo "  -p, --template     Set prompt template for conversation mode"
+  echo "  --project NAME     Set project name for conversation persistence"
+  echo ""
+  echo "Conversation Mode Commands:"
+  echo "  exit/quit          Exit conversation mode (auto-saves)"
+  echo "  clear              Clear current conversation"
+  echo "  save               Save current conversation"
   echo ""
   echo "Examples:"
   echo "  gemini 'What is the capital of France?'"
   echo "  gemini -c                                  # Enter conversation mode"
+  echo "  gemini -c --project myapp                  # Continue saved conversation"
   echo "  gemini -c -p 'Be concise. Only answer about Neovim shortcuts.'"
   echo "  gemini -m gemini-1.5-pro 'Explain quantum computing'"
   echo "  gemini -t 0.2 'Write a haiku about coding'"
@@ -46,6 +53,11 @@ PROMPT=""
 FROM_FILE=false
 CONVERSATION_MODE=false
 PROMPT_TEMPLATE=""
+PROJECT_NAME=""
+LOAD_CONVERSATION=false
+
+# Conversation state directory
+CONVERSATION_DIR="$HOME/.gemini-cli/conversations"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -75,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     PROMPT_TEMPLATE="$2"
     shift 2
     ;;
+  --project)
+    PROJECT_NAME="$2"
+    LOAD_CONVERSATION=true
+    shift 2
+    ;;
   *)
     if [ -z "$PROMPT" ]; then
       PROMPT="$1"
@@ -94,6 +111,53 @@ if [ "$FROM_FILE" = true ]; then
   fi
   PROMPT=$(cat "$FILE_PATH")
 fi
+
+# Function to ensure conversation directory exists
+ensure_conversation_dir() {
+  if [ ! -d "$CONVERSATION_DIR" ]; then
+    mkdir -p "$CONVERSATION_DIR"
+  fi
+}
+
+# Function to get conversation file path
+get_conversation_file() {
+  local project_name="$1"
+  if [ -z "$project_name" ]; then
+    # Use current directory name as default project name
+    project_name=$(basename "$(pwd)")
+  fi
+  # Replace spaces and special characters with underscores
+  project_name=$(echo "$project_name" | sed 's/[^a-zA-Z0-9-]/_/g')
+  echo "$CONVERSATION_DIR/${project_name}.json"
+}
+
+# Function to save conversation
+save_conversation() {
+  local conversation_history="$1"
+  local project_name="$2"
+  
+  ensure_conversation_dir
+  local conv_file=$(get_conversation_file "$project_name")
+  
+  echo "$conversation_history" > "$conv_file"
+  echo -e "${GREEN}Conversation saved to: $conv_file${NC}" >&2
+}
+
+# Function to load conversation
+load_conversation() {
+  local project_name="$1"
+  
+  local conv_file=$(get_conversation_file "$project_name")
+  
+  if [ -f "$conv_file" ]; then
+    cat "$conv_file"
+    echo -e "${GREEN}Loaded conversation from: $conv_file${NC}" >&2
+    return 0
+  else
+    echo "[]"
+    return 1
+  fi
+}
 
 # Function to make API request
 make_api_request() {
@@ -164,18 +228,33 @@ make_api_request() {
   return 0
 }
 
-# Function for conversation modesudo apt-get install jq
+# Function for conversation mode
 conversation_mode() {
   echo -e "${BLUE}Gemini Conversation Mode${NC}"
   echo -e "${YELLOW}Type 'exit' or 'quit' to end the conversation${NC}"
   echo -e "${YELLOW}Type 'clear' to start a new conversation${NC}"
+  echo -e "${YELLOW}Type 'save' to save the current conversation${NC}"
   if [ ! -z "$PROMPT_TEMPLATE" ]; then
     echo -e "${YELLOW}Using template: $PROMPT_TEMPLATE${NC}"
   fi
+  if [ ! -z "$PROJECT_NAME" ]; then
+    echo -e "${YELLOW}Project: $PROJECT_NAME${NC}"
+  else
+    echo -e "${YELLOW}Project: $(basename "$(pwd)")${NC}"
+  fi
   echo ""
 
-  # Initialize conversation history as empty JSON array
+  # Initialize conversation history
   local conversation_history="[]"
+  
+  # Load existing conversation if project name is specified
+  if [ "$LOAD_CONVERSATION" = true ]; then
+    conversation_history=$(load_conversation "$PROJECT_NAME")
+    if [ $? -eq 0 ] && [ "$conversation_history" != "[]" ]; then
+      echo -e "${BLUE}Continuing previous conversation...${NC}"
+      echo ""
+    fi
+  fi
 
   while true; do
     # Show prompt
@@ -184,6 +263,10 @@ conversation_mode() {
 
     # Check for exit commands
     if [[ "$user_input" == "exit" ]] || [[ "$user_input" == "quit" ]]; then
+      # Auto-save conversation on exit
+      if [ "$conversation_history" != "[]" ]; then
+        save_conversation "$conversation_history" "$PROJECT_NAME"
+      fi
       echo -e "${BLUE}Goodbye!${NC}"
       break
     fi
@@ -192,6 +275,13 @@ conversation_mode() {
     if [[ "$user_input" == "clear" ]]; then
       conversation_history="[]"
       echo -e "${YELLOW}Conversation cleared.${NC}"
+      echo ""
+      continue
+    fi
+
+    # Check for save command
+    if [[ "$user_input" == "save" ]]; then
+      save_conversation "$conversation_history" "$PROJECT_NAME"
       echo ""
       continue
     fi
