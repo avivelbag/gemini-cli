@@ -25,6 +25,7 @@ usage() {
   echo "Options:"
   echo "  -h, --help         Show this help message"
   echo "  -c, --conversation Enter conversation mode"
+  echo "  -l, --list         List saved conversations"
   echo "  -m, --model        Specify the model (default: gemini-1.5-flash)"
   echo "  -t, --temp         Set temperature 0.0-2.0 (default: 0.7)"
   echo "  -f, --file         Read prompt from file"
@@ -39,6 +40,7 @@ usage() {
   echo "Examples:"
   echo "  gemini 'What is the capital of France?'"
   echo "  gemini -c                                  # Enter conversation mode"
+  echo "  gemini -l                                  # List and select saved conversations"
   echo "  gemini -c --project myapp                  # Continue saved conversation"
   echo "  gemini -c -p 'Be concise. Only answer about Neovim shortcuts.'"
   echo "  gemini -m gemini-1.5-pro 'Explain quantum computing'"
@@ -55,6 +57,7 @@ CONVERSATION_MODE=false
 PROMPT_TEMPLATE=""
 PROJECT_NAME=""
 LOAD_CONVERSATION=false
+LIST_CONVERSATIONS=false
 
 # Conversation state directory
 CONVERSATION_DIR="$HOME/.gemini-cli/conversations"
@@ -68,6 +71,10 @@ while [[ $# -gt 0 ]]; do
     ;;
   -c | --conversation)
     CONVERSATION_MODE=true
+    shift
+    ;;
+  -l | --list)
+    LIST_CONVERSATIONS=true
     shift
     ;;
   -m | --model)
@@ -135,20 +142,20 @@ get_conversation_file() {
 save_conversation() {
   local conversation_history="$1"
   local project_name="$2"
-  
+
   ensure_conversation_dir
   local conv_file=$(get_conversation_file "$project_name")
-  
-  echo "$conversation_history" > "$conv_file"
+
+  echo "$conversation_history" >"$conv_file"
   echo -e "${GREEN}Conversation saved to: $conv_file${NC}" >&2
 }
 
 # Function to load conversation
 load_conversation() {
   local project_name="$1"
-  
+
   local conv_file=$(get_conversation_file "$project_name")
-  
+
   if [ -f "$conv_file" ]; then
     cat "$conv_file"
     echo -e "${GREEN}Loaded conversation from: $conv_file${NC}" >&2
@@ -246,7 +253,7 @@ conversation_mode() {
 
   # Initialize conversation history
   local conversation_history="[]"
-  
+
   # Load existing conversation if project name is specified
   if [ "$LOAD_CONVERSATION" = true ]; then
     conversation_history=$(load_conversation "$PROJECT_NAME")
@@ -335,6 +342,70 @@ $user_input"
     fi
   done
 }
+
+# Function to list conversations
+list_conversations() {
+  ensure_conversation_dir
+
+  if [ ! -d "$CONVERSATION_DIR" ] || [ -z "$(ls -A "$CONVERSATION_DIR" 2>/dev/null)" ]; then
+    echo -e "${YELLOW}No saved conversations found.${NC}"
+    return 1
+  fi
+
+  echo -e "${BLUE}Saved Conversations:${NC}"
+  echo ""
+
+  local i=1
+  local conversations=()
+
+  for conv_file in "$CONVERSATION_DIR"/*.json; do
+    if [ -f "$conv_file" ]; then
+      local conv_name=$(basename "$conv_file" .json)
+      local last_modified=$(stat -c "%y" "$conv_file" 2>/dev/null || stat -f "%m" "$conv_file" 2>/dev/null)
+      local file_size=$(wc -c <"$conv_file")
+      conversations+=("$conv_name")
+
+      echo -e "  ${GREEN}$i)${NC} $conv_name"
+      echo -e "     Modified: $(date -d "$last_modified" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$conv_file" '+%Y-%m-%d %H:%M' 2>/dev/null)"
+      echo -e "     Size: $((file_size / 1024))KB"
+      echo ""
+      ((i++))
+    fi
+  done
+
+  if [ ${#conversations[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No saved conversations found.${NC}"
+    return 1
+  fi
+
+  echo -ne "${YELLOW}Select a conversation (1-${#conversations[@]}) or press Enter to cancel: ${NC}"
+  read -r selection
+
+  if [ -z "$selection" ]; then
+    echo "Cancelled."
+    return 1
+  fi
+
+  if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt ${#conversations[@]} ]; then
+    echo -e "${RED}Invalid selection.${NC}"
+    return 1
+  fi
+
+  local selected_conv="${conversations[$((selection - 1))]}"
+  echo -e "${GREEN}Loading conversation: $selected_conv${NC}"
+  echo ""
+
+  # Start conversation mode with the selected project
+  PROJECT_NAME="$selected_conv"
+  LOAD_CONVERSATION=true
+  conversation_mode
+}
+
+# If list conversations is requested
+if [ "$LIST_CONVERSATIONS" = true ]; then
+  list_conversations
+  exit 0
+fi
 
 # If conversation mode is enabled, enter it
 if [ "$CONVERSATION_MODE" = true ]; then
